@@ -1,4 +1,4 @@
-# RT-MRI-contour-prediction---final-model
+# Rishant_Submission_on_RTMRI
 # Articulatory Contour Prediction using Deep Learning
 
 This repository contains the implementation of deep learning models developed for predicting the missing intermediate articulatory contour from Real-Time MRI (RT-MRI) speech sequences. Separate models are trained for **Contour1**, **Contour2**, and **Contour3**, with Variational Autoencoders (VAEs) used for Contour1 and Contour2, and a CNN-based regression model used for Contour3.

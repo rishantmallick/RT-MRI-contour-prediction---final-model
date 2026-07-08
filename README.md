@@ -255,7 +255,7 @@ The MLP predicts the residual contour.
 
 ---
 
-# CNN + MLP Theory (Contour 3)
+# CNN + MLP Theory 
 
 The Contour 3 model combines convolutional layers with a fully connected decoder.
 

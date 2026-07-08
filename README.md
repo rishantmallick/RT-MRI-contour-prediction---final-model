@@ -1,45 +1,90 @@
 # Rishant_Submission_on_RTMRI
-# Articulatory Contour Prediction using Deep Learning
+# RT-MRI Articulatory Contour Prediction
 
-This repository contains the implementation of deep learning models developed for predicting the missing intermediate articulatory contour from Real-Time MRI (RT-MRI) speech sequences. Separate models are trained for **Contour1**, **Contour2**, and **Contour3**, with Variational Autoencoders (VAEs) used for Contour1 and Contour2, and a CNN-based regression model used for Contour3.
+This repository contains the implementation of deep learning models for predicting the missing intermediate articulatory contour from Real-Time MRI (RT-MRI) speech sequences. Given the contours of the previous and future frames, the models estimate the contour corresponding to the intermediate frame using residual learning.
 
 ---
 
-# Preprocessing
+# Overview
 
-## 1. Arc-Length Interpolation
+The objective of this work is to reconstruct the missing articulatory contour between two consecutive RT-MRI frames.
 
-The contours extracted from the RT-MRI dataset contain varying numbers of points. To ensure a consistent representation, each contour is resampled to **100 points** using **Arc-Length Interpolation**.
+For every sample:
 
-### Procedure
+* **Input**
 
-1. Compute the Euclidean distance between every pair of consecutive contour points.
-2. Set the first contour point as the reference point with cumulative distance equal to zero.
-3. Compute the cumulative arc length along the contour.
-4. Normalize the cumulative distances by dividing them by the total contour length.
-5. Remove duplicate arc-length values using `np.unique()`.
-6. Perform linear interpolation independently for the x and y coordinates.
-7. Sample 100 uniformly spaced points along the normalized arc length.
+  * Previous contour
+  * Future contour
 
-Implementation:
+* **Output**
+
+  * Predicted intermediate contour
+
+Instead of predicting the complete contour directly, all models predict the **residual** between the linearly interpolated contour and the ground-truth contour.
+
+The final prediction is computed as
+
+```text
+Predicted Contour = Linear Interpolation + Predicted Residual
+```
+
+This significantly simplifies the learning problem since linear interpolation already provides a strong baseline.
+
+---
+
+# Repository Structure
+
+```text
+.
+├── Contour1/
+├── Contour2/
+├── Contour3/
+├── Model_Weights/
+├── Sample_Input/
+├── Sample_Output/
+├── README.md
+```
+
+---
+
+# Data Preprocessing
+
+## 1. Arc Length Interpolation
+
+The contour annotations originally contain varying numbers of points. To ensure a fixed-size input for all models, every contour is resampled to **100 equally spaced points** using Arc Length Interpolation.
+
+The preprocessing consists of the following steps:
+
+* Convert contour coordinates into a NumPy array.
+* Compute the Euclidean distance between consecutive contour points.
+* Compute the cumulative arc length beginning from the first point.
+* Normalize the cumulative arc length to the interval [0,1].
+* Remove duplicate arc-length values using `np.unique()`.
+* Generate 100 uniformly spaced positions along the normalized arc.
+* Perform linear interpolation independently for the x and y coordinates.
+* Stack the interpolated coordinates to obtain a contour of size **100 × 2**.
+
+### Implementation
 
 ```python
 def resample(pts, n=100):
     pts = np.array(pts, dtype=np.float32)
 
     diffs = np.diff(pts, axis=0)
-    arc = np.concatenate([[0], np.cumsum(np.sqrt((diffs**2).sum(1)))])
+    arc = np.concatenate([[0],
+                          np.cumsum(np.sqrt((diffs**2).sum(1)))])
 
     arc /= arc[-1]
 
     _, idx = np.unique(arc, return_index=True)
+
     arc = arc[idx]
     pts = pts[idx]
 
     t = np.linspace(0, 1, n)
 
-    fx = interp1d(arc, pts[:,0], kind="linear", fill_value="extrapolate")
-    fy = interp1d(arc, pts[:,1], kind="linear", fill_value="extrapolate")
+    fx = interp1d(arc, pts[:,0], kind='linear')
+    fy = interp1d(arc, pts[:,1], kind='linear')
 
     return np.stack([fx(t), fy(t)], axis=1)
 ```
@@ -48,156 +93,95 @@ def resample(pts, n=100):
 
 ## 2. Normalization
 
-The normalization statistics are computed by concatenating the **past contour** and **future contour**.
+The previous and future contours are concatenated to compute a common mean and standard deviation.
 
-```python
-mean = np.mean(np.concatenate([past_pts, future_pts], axis=0))
-std  = np.std(np.concatenate([past_pts, future_pts], axis=0))
-```
+The same statistics are then used to normalize
 
-The computed mean and standard deviation are then used to normalize
-
-* Past contour
+* Previous contour
 * Future contour
-* Ground-truth middle contour
+* Ground-truth contour
 
-This ensures that all three contours are represented in the same normalized coordinate space.
+This ensures that every contour is represented on the same numerical scale during training.
 
 ---
 
 ## 3. Data Augmentation
 
-To improve generalization, the training data is augmented using
+To improve generalization, geometric augmentation is applied during training.
+
+The augmentation consists of
 
 * Small random rotations
 * Small random translations
 
-Different augmentation parameters are applied independently to the **past frame** and the **future frame**, since consecutive speech frames naturally exhibit different articulatory motions.
+Different random transformations are applied independently to the previous and future frames to better simulate realistic articulatory motion.
 
 ---
 
 # Post Processing
 
+After the model predicts the residual, several post-processing steps are performed.
+
 ## Residual Addition
 
-The models predict the **residual contour** rather than the complete contour.
+The predicted residual is added to the linear interpolation.
 
-The predicted contour is reconstructed as
+```text
+Linear = (Past + Future) / 2
 
-```python
-linear = (past_pts + future_pts) / 2
-
-prediction = linear + predicted_residual
+Prediction = Linear + Predicted Residual
 ```
 
-Residual scaling is set to
-
-```
-Residual Scaling = 1
-```
-
-for both training and inference.
+Residual scaling is **not used** during either training or inference.
 
 ---
 
-## Denormalization
+## De-normalization
 
-The predicted contour is converted back to the original coordinate system using the same normalization statistics computed during preprocessing.
-
-```python
-prediction = prediction * std + mean
-```
+The predicted contour is converted back to the original coordinate system using the same mean and standard deviation computed during preprocessing.
 
 ---
 
 ## Coordinate Reconstruction
 
-The complete reconstruction pipeline is
+The reconstructed contour is obtained by
 
-```
-Predicted Residual
-        ↓
-Residual Addition
-        ↓
-Normalized Prediction
-        ↓
-Denormalization
-        ↓
-Final Contour Coordinates
-```
-
----
-
-# Installation
-
-Install the required packages using
-
-```bash
-pip install torch
-pip install scipy numpy pandas fastdtw
-```
-
----
-
-# Running the Project
-
-The project is designed to run directly in **Google Colab**.
-
-1. Upload the notebook to Google Colab.
-2. Mount Google Drive if the model weights are stored there.
-3. Run all cells.
-4. Load the pretrained weights.
-5. Execute the inference cells.
-
----
-
-# Input and Output
-
-Both the input and output files are MATLAB `.mat` files.
+1. Computing linear interpolation
+2. Adding the predicted residual
+3. De-normalizing the contour
 
 ---
 
 # Model Architectures
 
-## Contour 3
+The repository contains separate architectures for each contour.
 
-### Architecture
+---
 
-Contour3 uses a CNN-based regression network consisting of
+# Contour 1
 
-* 2 Convolutional Layers
-* Adaptive Average Pooling
-* 2-Layer MLP Decoder
+## Architecture
 
-The CNN encoder extracts local geometric features from the contours, while adaptive pooling reduces the spatial dimension and preserves the most informative features. The decoder predicts the contour coordinates.
+* 4-layer Multi-Layer Perceptron (MLP)
+
+The network learns high-dimensional representations of articulatory movement and predicts the residual between the interpolated contour and the ground-truth contour.
 
 ### Hyperparameters
 
-```python
-Residual Scaling = 1
+| Parameter         |     Value |
+| ----------------- | --------: |
+| Learning Rate     |  2 × 10⁻⁵ |
+| Weight Decay      |  1 × 10⁻⁵ |
+| Smoothness Weight |      0.01 |
+| Residual Scaling  |      0.05 |
+| Batch Size        |        32 |
+| Epochs            |       100 |
+| Optimizer         |      Adam |
+| Early Stopping    | 50 epochs |
 
-Learning Rate   = 2.5e-5
-Weight Decay    = 1e-5
-Smooth Weight   = 0.01
+### Loss Function
 
-Epochs          = 100
-Batch Size      = 32
-```
-
-Optimizer
-
-```python
-optimizer = torch.optim.Adam(
-    model.parameters(),
-    lr=2.5e-5,
-    weight_decay=1e-5
-)
-```
-
-Training
-
-* Early Stopping Patience = 40
-* Huber Loss
+* Huber Loss (δ = 0.1)
 * Smoothness Loss
 
 ---
@@ -206,218 +190,163 @@ Training
 
 ## Architecture
 
-Contour2 is modeled using a **Variational Autoencoder (VAE)**.
+* 3-layer MLP Encoder
+* Latent Representation
+* 3-layer MLP Decoder
+* Skip Connection
 
-### Encoder
+The encoder extracts compact features from the previous and future contours.
 
-The encoder receives the concatenated past and future contours.
+The decoder reconstructs the residual contour from the latent representation.
 
-```python
-self.encoder = nn.Sequential(
-    nn.Linear(400,256),
-    nn.ReLU(),
-    nn.Dropout(0.2),
+The skip connection restores spatial information lost during encoding, improving reconstruction accuracy.
 
-    nn.Linear(256,128),
-    nn.ReLU(),
-    nn.Dropout(0.2),
+### Hyperparameters
 
-    nn.Linear(128,64),
-    nn.ReLU()
-)
-```
-
-The encoder predicts
-
-```python
-self.fc_mu = nn.Linear(64, latent_dim)
-self.fc_logvar = nn.Linear(64, latent_dim)
-```
-
-where
-
-* `μ` is the latent mean
-* `logσ²` is the latent log variance
-
----
-
-### Reparameterization
-
-```python
-std = torch.exp(0.5 * logvar)
-eps = torch.randn_like(std)
-z = mu + eps * std
-```
-
----
-
-### Decoder
-
-```python
-self.decoder = nn.Sequential(
-    nn.Linear(latent_dim, 200)
-)
-```
-
-The decoder predicts the contour residual.
-
-The final contour is reconstructed as
-
-```python
-prediction = linear_interpolation + predicted_residual
-```
-
----
+| Parameter         |       Value |
+| ----------------- | ----------: |
+| Learning Rate     | 1.25 × 10⁻⁵ |
+| Weight Decay      |    1 × 10⁻⁶ |
+| Smoothness Weight |        0.02 |
+| Residual Scaling  |        0.04 |
+| Batch Size        |          32 |
+| Epochs            |         100 |
+| Optimizer         |        Adam |
+| Early Stopping    |   25 epochs |
 
 ### Loss Function
 
-Reconstruction Loss
-
-```python
-reconstruction_loss = 10 * huber_loss(prediction, target)
-```
-
-KL Divergence
-
-```python
-kl_loss = -0.5 * torch.mean(
-    1 + logvar - mu.pow(2) - logvar.exp()
-)
-```
-
-Total Loss
-
-```python
-loss = reconstruction_loss + kl_weight * kl_loss
-```
-
-The KL weight is linearly annealed over the first **20 epochs** until it reaches **0.005**.
-
-The VAE loss is further combined with the smoothness loss during training.
-
-### Hyperparameters
-
-```python
-Residual Scaling = 1
-
-Learning Rate  = 5e-4
-Weight Decay   = 1e-6
-Smooth Weight  = 0.02
-
-Epochs         = 100
-Batch Size     = 32
-```
-
-Optimizer
-
-```python
-optimizer = torch.optim.Adam(
-    model.parameters(),
-    lr=5e-4,
-    weight_decay=1e-6
-)
-```
-
-Training
-
-* Early Stopping Patience = 40
-* Huber Reconstruction Loss
-* KL Divergence Loss
+* Huber Loss (δ = 0.1)
 * Smoothness Loss
 
 ---
 
-# Contour 1
+# Contour 3
 
 ## Architecture
 
-Contour1 also uses a **Variational Autoencoder (VAE)**.
+* 2-layer CNN Encoder
+* Adaptive Max Pooling
+* 2-layer MLP Decoder
 
-The encoder consists of three fully connected layers that generate the latent mean and latent variance.
+The CNN extracts local geometric information from neighbouring contour points.
 
-The latent vector has
+Adaptive pooling compresses the learned feature maps while preserving the most informative responses.
 
-```
-Latent Dimension = 64
-```
-
-The decoder consists of two fully connected layers that predict the contour residual.
-
-The final contour is reconstructed as
-
-```python
-prediction = linear_interpolation + predicted_residual
-```
+The MLP predicts the residual contour.
 
 ### Hyperparameters
 
-```python
-Residual Scaling = 1
+| Parameter         |      Value |
+| ----------------- | ---------: |
+| Learning Rate     | 2.5 × 10⁻⁵ |
+| Weight Decay      |   1 × 10⁻⁵ |
+| Smoothness Weight |       0.01 |
+| Residual Scaling  |          1 |
+| Batch Size        |         32 |
+| Epochs            |        100 |
+| Optimizer         |       Adam |
+| Early Stopping    |  40 epochs |
 
-Learning Rate  = 2e-4
-Weight Decay   = 1e-5
-Smooth Weight  = 0.01
+### Loss Function
 
-Epochs         = 100
-Batch Size     = 32
-```
-
-Optimizer
-
-```python
-optimizer = torch.optim.Adam(
-    model.parameters(),
-    lr=2e-4,
-    weight_decay=1e-5
-)
-```
-
-Training
-
-* Early Stopping Patience = 40
-* Huber Reconstruction Loss
-* KL Divergence Loss
+* Huber Loss (δ = 0.1)
 * Smoothness Loss
 
 ---
 
-# Inference
+# CNN + MLP Theory (Contour 3)
 
-During testing, stochastic sampling is disabled.
+The Contour 3 model combines convolutional layers with a fully connected decoder.
 
-```python
-z = mu
-prediction = decoder(z)
-```
+The CNN treats the contour as a one-dimensional sequence and applies sliding convolution kernels to neighbouring contour points. These kernels learn local geometric features such as curvature, local slopes, and contour smoothness. Since convolutional filters share weights across the contour, the learned features are translation invariant and generalize well across different articulatory shapes.
 
-The predicted residual is added to the linear interpolation,
+Adaptive pooling compresses the feature representation while retaining the strongest responses produced by the convolutional layers.
 
-```python
-prediction = linear_interpolation + predicted_residual
-```
+The pooled feature vector is passed to a Multi-Layer Perceptron, which predicts the residual between the linearly interpolated contour and the ground-truth contour.
 
-followed by denormalization,
+Rather than reconstructing the entire contour, the network learns only the non-linear correction required to transform the linear interpolation into the true articulatory contour.
 
-```python
-prediction = prediction * std + mean
-```
+The model is trained using a combination of
 
-to obtain the final contour coordinates.
+* Huber reconstruction loss
+* Smoothness loss
+
+The Huber loss improves point-wise accuracy while remaining robust to outliers, whereas the smoothness loss penalizes abrupt changes between neighbouring contour points, resulting in anatomically plausible contours.
 
 ---
 
-# Summary
+# Training Configuration
 
-| Component           | Contour1                | Contour2                | Contour3                     |
-| ------------------- | ----------------------- | ----------------------- | ---------------------------- |
-| Model               | Variational Autoencoder | Variational Autoencoder | CNN + Adaptive Pooling + MLP |
-| Residual Prediction | ✓                       | ✓                       | ✓                            |
-| Latent Dimension    | 64                      | 64                      | —                            |
-| Reconstruction Loss | Huber                   | Huber                   | Huber                        |
-| KL Divergence       | ✓                       | ✓                       | ✗                            |
-| Smoothness Loss     | ✓                       | ✓                       | ✓                            |
-| Optimizer           | Adam                    | Adam                    | Adam                         |
-| Epochs              | 100                     | 100                     | 100                          |
-| Batch Size          | 32                      | 32                      | 32                           |
-| Early Stopping      | 40                      | 40                      | 40                           |
+| Parameter   | Value |
+| ----------- | ----: |
+| Optimizer   |  Adam |
+| Batch Size  |    32 |
+| Epochs      |   100 |
+| Huber Delta |   0.1 |
 
+---
+
+# Required Packages
+
+Install the required dependencies before running the project.
+
+```bash
+pip install torch
+pip install scipy
+pip install numpy
+pip install pandas
+pip install fastdtw
+```
+
+---
+
+# Running Inference
+
+The inference notebook is designed to run directly in **Google Colab**.
+
+1. Upload or open the notebook in Google Colab.
+2. Install the required packages.
+3. Download the model weights if required.
+4. Run all cells.
+5. The predicted contours will be saved as MATLAB (`.mat`) files and visualized as PNG images.
+
+---
+
+# Model Weight Names
+
+The model names used during training have been renamed in this repository.
+
+| Training Name                        | Repository Name     |
+| ------------------------------------ | ------------------- |
+| `contour1_huberfinal-7158`           | `ri_contour1_model` |
+| `contour2_huberfinal-imp89`          | `ri_contour2_model` |
+| `contour3_huberfinal-4879loudasdsad` | `ri_contour3_model` |
+
+---
+
+# Input and Output Format
+
+Both the input and output files are MATLAB (`.mat`) files.
+
+Each contour is stored as a **100 × 2** array representing the x and y coordinates of the articulatory contour.
+
+---
+
+# Output
+
+The inference pipeline produces:
+
+* Predicted Contour 1
+* Predicted Contour 2
+* Predicted Contour 3
+* MATLAB output file (`.mat`)
+* Visualization of predicted contours (`.png`)
+
+---
+
+# Author
+
+**Rishant Mallick**
+
+This repository contains the implementation developed for articulatory contour prediction from Real-Time MRI speech data using deep learning-based residual prediction models.
